@@ -1,0 +1,6 @@
+{
+  "name": "tiny-previsao-compras",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Consulta a API do Tiny ERP e gera previsão de compras (consumo, custo e parcelamento)."
+}
