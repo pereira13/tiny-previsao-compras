@@ -469,4 +469,16 @@ function exportarCSV(){
     linhas.push([fmtData(new Date(pc.vencimento)), p.fornecedor, fmtData(new Date(c.dataCompra)), pc.valor.toFixed(2)]);
   })));
   if(linhas.length===1){ alert('Nenhuma previsão para exportar.'); return; }
-  const csv =
+  const csv = linhas.map(l=>l.join(';')).join('\n');
+  const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'fluxo_pagamento.csv';
+  a.click();
+}
+
+function renderTudo(){ renderPlanos(); renderFluxo(); renderProdutos(); renderVendas(); }
+renderTudo();
+</script>
+</body>
+</html>
