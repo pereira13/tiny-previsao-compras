@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Previsão de Compras</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
   --bg:#f7f7f5; --card:#fff; --text:#1f1f1f; --muted:#6b6b6b;
@@ -31,7 +32,7 @@ button{cursor:pointer;border:none;border-radius:8px;padding:9px 16px;font-size:.
 .btn-primary{background:var(--accent);color:#fff;}
 .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text);}
 .btn-danger{background:transparent;color:var(--danger);border:1px solid var(--danger);}
-.row-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;}
+.row-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center;}
 table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:10px;}
 th,td{padding:7px 8px;border-bottom:1px solid var(--border);text-align:left;}
 th{color:var(--muted);font-weight:600;}
@@ -42,20 +43,44 @@ th{color:var(--muted);font-weight:600;}
 .overflow{overflow-x:auto;}
 .empty{color:var(--muted);font-size:.85rem;padding:10px 0;}
 input[type=file]{padding:6px;}
+.small{width:90px !important;display:inline-block;}
 </style>
 </head>
 <body>
 
 <h1>📦 Previsão de Compras</h1>
-<p class="sub">Conectado à API do Tiny. Defina quanto vai comprar de cada fornecedor, e o sistema divide em compras semanais e parcelas de pagamento.</p>
+<p class="sub">Suba os relatórios de vendas do Tiny (.xls) para calcular o consumo médio, cruze com o custo, e monte a previsão de compra parcelada.</p>
 
 <div class="card">
-  <h3 style="margin-top:0">Produtos cadastrados no Tiny (ao vivo)</h3>
+  <h3 style="margin-top:0">1. Vendas por período (saída de estoque)</h3>
+  <p class="sub" style="margin:0 0 12px">No Tiny, exporte o relatório de vendas (Relatórios > Vendas) do período que quiser (ex: última semana) e suba o .xls aqui. Pode subir vários períodos ao longo do tempo — o sistema acumula tudo para calcular a média.</p>
   <div class="row-actions">
-    <button class="btn-primary" onclick="buscarProdutosTiny()">🔄 Buscar produtos no Tiny</button>
-    <button class="btn-ghost" onclick="buscarDadosCompletosTiny()">🔄 Buscar consumo + custo + histórico</button>
+    <label>Esse relatório cobre quantos dias de venda? <input class="small" id="vendas-dias" type="number" value="7" min="1" style="display:inline-block;width:70px;margin-left:6px"></label>
+    <label class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;">
+      📎 Anexar relatório (.xls/.xlsx) <input type="file" id="vendas-upload" accept=".xls,.xlsx" multiple style="display:none" onchange="handleVendasUpload(event)">
+    </label>
   </div>
-  <div id="tiny-status" class="empty">Clique em um dos botões para consultar a API do Tiny agora.</div>
+  <div id="vendas-status" class="empty"></div>
+
+  <div id="vendas-periodos"></div>
+
+  <h4 style="margin:16px 0 4px">Todos os produtos com saída registrada</h4>
+  <div class="overflow"><table id="vendas-agregado-table">
+    <thead><tr><th>Código</th><th>Produto</th><th>Qtd. total vendida</th><th>Dias cobertos</th><th>Consumo médio/dia</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <div id="vendas-empty" class="empty">Nenhum relatório de vendas anexado ainda.</div>
+  <div class="row-actions">
+    <button class="btn-primary" onclick="aplicarVendasNaReposicao()">Usar essas médias na reposição de estoque ↓</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">2. Custo dos produtos no Tiny (ao vivo)</h3>
+  <div class="row-actions">
+    <button class="btn-primary" onclick="buscarProdutosTiny()">🔄 Buscar produtos e custos no Tiny</button>
+  </div>
+  <div id="tiny-status" class="empty">Traz o custo de cada produto para calcular o valor da compra automaticamente.</div>
   <div class="overflow"><table id="tiny-produtos-table" style="display:none">
     <thead><tr><th>Código</th><th>Nome</th><th>Preço venda</th><th>Custo</th><th>Situação</th></tr></thead>
     <tbody></tbody>
@@ -63,10 +88,11 @@ input[type=file]{padding:6px;}
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0">Reposição de estoque (quanto comprar e quanto custa)</h3>
-  <p class="sub" style="margin:0 0 12px">Baseado no consumo diário, calcula quanto comprar para cobrir os dias desejados e o custo total. Importe o JSON gerado pelo script, ou adicione manualmente.</p>
+  <h3 style="margin-top:0">3. Reposição de estoque (quanto comprar e quanto custa)</h3>
+  <p class="sub" style="margin:0 0 12px">Consumo diário preenchido a partir das vendas importadas acima; custo preenchido a partir do Tiny (você pode ajustar tudo na mão também).</p>
   <div class="grid">
     <div><label>Produto</label><input id="p-nome" placeholder="Ex: Camiseta branca P"></div>
+    <div><label>Código (SKU)</label><input id="p-codigo" placeholder="Opcional"></div>
     <div><label>Fornecedor</label><input id="p-fornecedor" placeholder="Ex: Ana"></div>
     <div><label>Estoque atual (un)</label><input id="p-estoque" type="number" value="0"></div>
     <div><label>Consumo diário (un/dia)</label><input id="p-consumo" type="number" step="0.01" value="0"></div>
@@ -74,11 +100,7 @@ input[type=file]{padding:6px;}
     <div><label>Dias de cobertura desejados</label><input id="p-dias" type="number" value="30"></div>
   </div>
   <div class="row-actions">
-    <button class="btn-primary" onclick="salvarProduto()">Adicionar produto</button>
-    <button class="btn-ghost" onclick="buscarDadosCompletosTiny()">🔄 Importar do Tiny (ao vivo)</button>
-    <label class="btn-ghost" style="display:inline-flex;align-items:center;gap:6px;">
-      ou importar JSON <input type="file" id="import-produtos" accept=".json" style="display:none" onchange="importarProdutosJSON(event)">
-    </label>
+    <button class="btn-primary" onclick="salvarProduto()">Adicionar produto manualmente</button>
   </div>
   <div class="overflow"><table id="produtos-table">
     <thead><tr><th>Produto</th><th>Fornecedor</th><th>Estoque</th><th>Consumo/dia</th><th>Custo un.</th><th>Cobertura (dias)</th><th>Comprar (un)</th><th>Valor da compra</th><th></th></tr></thead>
@@ -88,7 +110,7 @@ input[type=file]{padding:6px;}
 </div>
 
 <div class="card" id="secao-pedido">
-  <h3 style="margin-top:0">Nova previsão de compra</h3>
+  <h3 style="margin-top:0">4. Fechar pedido com o fornecedor (parcelamento)</h3>
   <div class="grid">
     <div><label>Fornecedor</label><input id="f-fornecedor" placeholder="Ex: Ana"></div>
     <div><label>Valor total (R$)</label><input id="f-valor" type="number" placeholder="100000"></div>
@@ -98,12 +120,8 @@ input[type=file]{padding:6px;}
   </div>
   <div class="row-actions">
     <button class="btn-primary" onclick="salvarPlano()">Calcular e salvar</button>
-    <label class="btn-ghost" style="display:inline-flex;align-items:center;gap:6px;">
-      Importar JSON do Tiny <input type="file" id="import-json" accept=".json" style="display:none" onchange="importarJSON(event)">
-    </label>
     <button class="btn-ghost" onclick="exportarCSV()">Exportar CSV (fluxo de pagamento)</button>
   </div>
-  <div id="historico-info" class="empty"></div>
 </div>
 
 <div id="planos"></div>
@@ -117,22 +135,162 @@ input[type=file]{padding:6px;}
 <script>
 let planos = [];
 let produtos = [];
-let historicoTiny = null;
+let vendasSemanais = [];
+let custoPorCodigo = {};
+
 try{
-  const salvo = localStorage.getItem('previsao_compras_planos');
-  if(salvo) planos = JSON.parse(salvo);
-  const salvoProd = localStorage.getItem('previsao_compras_produtos');
-  if(salvoProd) produtos = JSON.parse(salvoProd);
+  planos = JSON.parse(localStorage.getItem('previsao_compras_planos') || '[]');
+  produtos = JSON.parse(localStorage.getItem('previsao_compras_produtos') || '[]');
+  vendasSemanais = JSON.parse(localStorage.getItem('previsao_compras_vendas') || '[]');
+  custoPorCodigo = JSON.parse(localStorage.getItem('previsao_compras_custos') || '{}');
 }catch(e){ console.warn('Não foi possível carregar dados salvos', e); }
 
-function salvarStorage(){
-  try{ localStorage.setItem('previsao_compras_planos', JSON.stringify(planos)); }catch(e){}
-}
-function salvarStorageProdutos(){
-  try{ localStorage.setItem('previsao_compras_produtos', JSON.stringify(produtos)); }catch(e){}
+function salvarStorage(){ try{ localStorage.setItem('previsao_compras_planos', JSON.stringify(planos)); }catch(e){} }
+function salvarStorageProdutos(){ try{ localStorage.setItem('previsao_compras_produtos', JSON.stringify(produtos)); }catch(e){} }
+function salvarStorageVendas(){ try{ localStorage.setItem('previsao_compras_vendas', JSON.stringify(vendasSemanais)); }catch(e){} }
+function salvarStorageCustos(){ try{ localStorage.setItem('previsao_compras_custos', JSON.stringify(custoPorCodigo)); }catch(e){} }
+
+function fmt(v){ return (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
+function fmtData(d){ return d.toLocaleDateString('pt-BR'); }
+
+// ---------------------------------------------------------------
+// 1. Vendas por período (upload .xls do Tiny)
+// ---------------------------------------------------------------
+function parseArquivoVendas(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = e=>{
+      try{
+        const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
+        const itens = rows.map(r=>{
+          const keys = Object.keys(r);
+          const kProduto = keys.find(k=>/produto/i.test(k));
+          const kCodigo = keys.find(k=>/c[oó]digo/i.test(k));
+          const kQtd = keys.find(k=>/quantidade/i.test(k));
+          const qtdRaw = String(r[kQtd] ?? '0').replace('.', '').replace(',', '.');
+          return { nome: (r[kProduto]||'').toString().trim(), codigo: (r[kCodigo]||'').toString().trim(), quantidade: parseFloat(qtdRaw) || 0 };
+        }).filter(i=>i.codigo);
+        resolve(itens);
+      }catch(err){ reject(err); }
+    };
+    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo'));
+    reader.readAsArrayBuffer(file);
+  });
 }
 
-// ---- Reposição de estoque ----
+async function handleVendasUpload(ev){
+  const files = Array.from(ev.target.files || []);
+  if(!files.length) return;
+  const dias = parseInt(document.getElementById('vendas-dias').value) || 7;
+  const status = document.getElementById('vendas-status');
+  for(const file of files){
+    status.textContent = `Lendo ${file.name}...`;
+    try{
+      const itens = await parseArquivoVendas(file);
+      vendasSemanais.push({ id: Date.now()+Math.random(), arquivo: file.name, dias, importadoEm: new Date().toISOString(), itens });
+    }catch(err){
+      alert(`Não consegui ler "${file.name}": ${err.message}`);
+    }
+  }
+  salvarStorageVendas();
+  status.textContent = `${files.length} arquivo(s) processado(s).`;
+  ev.target.value = '';
+  renderVendas();
+}
+
+function removerSnapshotVendas(id){
+  vendasSemanais = vendasSemanais.filter(v=>v.id!==id);
+  salvarStorageVendas();
+  renderVendas();
+}
+
+function agregarVendas(){
+  const totais = {};
+  vendasSemanais.forEach(snap=>{
+    snap.itens.forEach(it=>{
+      if(!totais[it.codigo]) totais[it.codigo] = {codigo: it.codigo, nome: it.nome, quantidade: 0};
+      totais[it.codigo].quantidade += it.quantidade;
+      if(it.nome) totais[it.codigo].nome = it.nome;
+    });
+  });
+  const diasTotal = vendasSemanais.reduce((s,v)=>s+v.dias, 0) || 1;
+  return Object.values(totais)
+    .map(t=>({...t, diasTotal, consumoDiario: t.quantidade / diasTotal}))
+    .sort((a,b)=>b.quantidade - a.quantidade);
+}
+
+function renderVendas(){
+  const periodosEl = document.getElementById('vendas-periodos');
+  periodosEl.innerHTML = vendasSemanais.length ? `<table><thead><tr><th>Arquivo</th><th>Dias cobertos</th><th>Produtos no relatório</th><th></th></tr></thead><tbody>` +
+    vendasSemanais.map(v=>`<tr><td>${v.arquivo}</td><td>${v.dias}</td><td>${v.itens.length}</td><td><button class="btn-danger" style="padding:4px 8px;font-size:.75rem" onclick="removerSnapshotVendas(${v.id})">✕</button></td></tr>`).join('') +
+    `</tbody></table>` : '';
+
+  const agregados = agregarVendas();
+  document.getElementById('vendas-empty').style.display = agregados.length ? 'none' : 'block';
+  document.querySelector('#vendas-agregado-table tbody').innerHTML = agregados.map(a=>
+    `<tr><td>${a.codigo}</td><td>${a.nome}</td><td>${a.quantidade}</td><td>${a.diasTotal}</td><td><strong>${a.consumoDiario.toFixed(2)}</strong></td></tr>`
+  ).join('');
+}
+
+function aplicarVendasNaReposicao(){
+  const agregados = agregarVendas();
+  if(!agregados.length){ alert('Anexe pelo menos um relatório de vendas primeiro.'); return; }
+  agregados.forEach(a=>{
+    let p = produtos.find(x=>x.codigo && x.codigo===a.codigo);
+    const custo = custoPorCodigo[a.codigo];
+    if(p){
+      p.consumoDiario = +a.consumoDiario.toFixed(4);
+      p.nome = a.nome || p.nome;
+      if(custo) p.custoUnitario = custo.custo;
+    } else {
+      produtos.push({
+        id: Date.now()+Math.random()+a.codigo,
+        codigo: a.codigo,
+        nome: a.nome,
+        fornecedor: '',
+        estoqueAtual: 0,
+        consumoDiario: +a.consumoDiario.toFixed(4),
+        custoUnitario: custo ? custo.custo : 0,
+        diasCobertura: 30,
+      });
+    }
+  });
+  salvarStorageProdutos();
+  renderProdutos();
+  alert(`${agregados.length} produtos atualizados na seção de reposição de estoque. Preencha o fornecedor e confira o estoque atual de cada um.`);
+}
+
+// ---------------------------------------------------------------
+// 2. Custo dos produtos (API do Tiny)
+// ---------------------------------------------------------------
+async function buscarProdutosTiny(){
+  const status = document.getElementById('tiny-status');
+  status.textContent = 'Consultando produtos no Tiny...';
+  try{
+    const resp = await fetch('/api/produtos');
+    const dados = await resp.json();
+    if(dados.erro) throw new Error(dados.erro);
+    status.textContent = `${dados.total} produtos encontrados no Tiny.`;
+    custoPorCodigo = {};
+    dados.produtos.forEach(p=>{
+      if(p.codigo) custoPorCodigo[p.codigo] = { nome: p.nome, preco: parseFloat(p.preco)||0, custo: parseFloat(p.preco_custo)||0 };
+    });
+    salvarStorageCustos();
+    const table = document.getElementById('tiny-produtos-table');
+    table.style.display = 'table';
+    table.querySelector('tbody').innerHTML = dados.produtos.map(p=>
+      `<tr><td>${p.codigo||''}</td><td>${p.nome||''}</td><td>${fmt(parseFloat(p.preco)||0)}</td><td>${fmt(parseFloat(p.preco_custo)||0)}</td><td>${p.situacao||''}</td></tr>`
+    ).join('');
+  }catch(err){
+    status.textContent = `Erro ao consultar o Tiny: ${err.message}. Confira se TINY_API_TOKEN está configurado na Vercel.`;
+  }
+}
+
+// ---------------------------------------------------------------
+// 3. Reposição de estoque
+// ---------------------------------------------------------------
 function calcularSugestao(p){
   const estoqueNecessario = p.consumoDiario * p.diasCobertura;
   const qtdComprar = Math.max(0, estoqueNecessario - p.estoqueAtual);
@@ -142,16 +300,18 @@ function calcularSugestao(p){
 
 function salvarProduto(){
   const nome = document.getElementById('p-nome').value.trim();
+  const codigo = document.getElementById('p-codigo').value.trim();
   const fornecedor = document.getElementById('p-fornecedor').value.trim();
   const estoqueAtual = parseFloat(document.getElementById('p-estoque').value) || 0;
   const consumoDiario = parseFloat(document.getElementById('p-consumo').value) || 0;
   const custoUnitario = parseFloat(document.getElementById('p-custo').value) || 0;
   const diasCobertura = parseFloat(document.getElementById('p-dias').value) || 0;
   if(!nome || !fornecedor){ alert('Preencha ao menos o produto e o fornecedor.'); return; }
-  produtos.push({id: Date.now()+Math.random(), nome, fornecedor, estoqueAtual, consumoDiario, custoUnitario, diasCobertura});
+  produtos.push({id: Date.now()+Math.random(), codigo, nome, fornecedor, estoqueAtual, consumoDiario, custoUnitario, diasCobertura});
   salvarStorageProdutos();
   renderProdutos();
-  ['p-nome','p-fornecedor','p-estoque','p-consumo','p-custo'].forEach(id=>document.getElementById(id).value = id==='p-estoque'||id==='p-consumo'||id==='p-custo' ? 0 : '');
+  ['p-nome','p-codigo','p-fornecedor'].forEach(id=>document.getElementById(id).value='');
+  ['p-estoque','p-consumo','p-custo'].forEach(id=>document.getElementById(id).value=0);
 }
 
 function atualizarProdutoCampo(id, campo, valor){
@@ -183,8 +343,8 @@ function renderProdutos(){
   tbody.innerHTML = produtos.map(p=>{
     const {qtdComprar, valorCompra} = calcularSugestao(p);
     return `<tr>
-      <td>${p.nome}</td>
-      <td>${p.fornecedor}</td>
+      <td>${p.nome}${p.codigo?` <span class="tag">${p.codigo}</span>`:''}</td>
+      <td><input value="${p.fornecedor||''}" style="width:100px" onchange="atualizarProdutoTexto(${p.id},'fornecedor',this.value)"></td>
       <td><input type="number" value="${p.estoqueAtual}" style="width:80px" onchange="atualizarProdutoCampo(${p.id},'estoqueAtual',this.value)"></td>
       <td><input type="number" step="0.01" value="${p.consumoDiario}" style="width:80px" onchange="atualizarProdutoCampo(${p.id},'consumoDiario',this.value)"></td>
       <td><input type="number" step="0.01" value="${p.custoUnitario}" style="width:90px" onchange="atualizarProdutoCampo(${p.id},'custoUnitario',this.value)"></td>
@@ -199,81 +359,16 @@ function renderProdutos(){
   }).join('');
 }
 
-function processarDadosTiny(dados){
-  const lista = dados.produtos_consumo || [];
-  lista.forEach(item=>{
-    produtos.push({
-      id: Date.now()+Math.random(),
-      nome: item.nome || item.codigo || 'Produto sem nome',
-      fornecedor: '',
-      estoqueAtual: item.estoque_atual ?? 0,
-      consumoDiario: item.consumo_diario ?? 0,
-      custoUnitario: item.preco_custo ?? 0,
-      diasCobertura: 30,
-    });
-  });
+function atualizarProdutoTexto(id, campo, valor){
+  const p = produtos.find(x=>x.id===id);
+  if(!p) return;
+  p[campo] = valor;
   salvarStorageProdutos();
-  renderProdutos();
-  const hist = dados.historico_por_fornecedor || [];
-  if(hist.length){
-    const porFornecedor = {};
-    hist.forEach(h=>{ porFornecedor[h.fornecedor] = (porFornecedor[h.fornecedor]||0) + h.total_comprado; });
-    const linhas = Object.entries(porFornecedor).map(([f,v])=>`${f}: ${fmt(v)} no período`).join(' | ');
-    document.getElementById('historico-info').textContent = `Histórico financeiro (${dados.periodo_financeiro?.de} a ${dados.periodo_financeiro?.ate}): ${linhas}`;
-  }
-  return lista.length;
 }
 
-function importarProdutosJSON(ev){
-  const file = ev.target.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = e=>{
-    try{
-      const qtd = processarDadosTiny(JSON.parse(e.target.result));
-      alert(`${qtd} produtos importados. Preencha fornecedor e estoque atual de cada um.`);
-    }catch(err){
-      alert('Arquivo inválido. Use o JSON gerado pelo script previsao_compras_tiny.py');
-    }
-  };
-  reader.readAsText(file);
-}
-
-async function buscarProdutosTiny(){
-  const status = document.getElementById('tiny-status');
-  status.textContent = 'Consultando produtos no Tiny...';
-  try{
-    const resp = await fetch('/api/produtos');
-    const dados = await resp.json();
-    if(dados.erro) throw new Error(dados.erro);
-    status.textContent = `${dados.total} produtos encontrados no Tiny.`;
-    const table = document.getElementById('tiny-produtos-table');
-    table.style.display = 'table';
-    table.querySelector('tbody').innerHTML = dados.produtos.map(p=>
-      `<tr><td>${p.codigo||''}</td><td>${p.nome||''}</td><td>${fmt(parseFloat(p.preco)||0)}</td><td>${fmt(parseFloat(p.preco_custo)||0)}</td><td>${p.situacao||''}</td></tr>`
-    ).join('');
-  }catch(err){
-    status.textContent = `Erro ao consultar o Tiny: ${err.message}. Confira se TINY_API_TOKEN está configurado na Vercel.`;
-  }
-}
-
-async function buscarDadosCompletosTiny(){
-  const status = document.getElementById('tiny-status');
-  status.textContent = 'Consultando consumo, custo e histórico no Tiny (pode levar alguns segundos)...';
-  try{
-    const resp = await fetch('/api/dados-tiny');
-    const dados = await resp.json();
-    if(dados.erro) throw new Error(dados.erro);
-    const qtd = processarDadosTiny(dados);
-    status.textContent = `${qtd} produtos importados com consumo e custo (${dados.periodo_consumo.de} a ${dados.periodo_consumo.ate}).`;
-  }catch(err){
-    status.textContent = `Erro ao consultar o Tiny: ${err.message}. Confira se TINY_API_TOKEN está configurado na Vercel.`;
-  }
-}
-
-function fmt(v){ return v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
-function fmtData(d){ return d.toLocaleDateString('pt-BR'); }
-
+// ---------------------------------------------------------------
+// 4. Pedido / parcelamento
+// ---------------------------------------------------------------
 function calcularPlano({fornecedor, valorTotal, dataInicio, semanas, diasParcelas}){
   const valorSemana = valorTotal / semanas;
   const compras = [];
@@ -297,13 +392,11 @@ function salvarPlano(){
   const dataStr = document.getElementById('f-data').value;
   const semanas = parseInt(document.getElementById('f-semanas').value);
   const diasParcelas = document.getElementById('f-parcelas').value.split(',').map(s=>parseInt(s.trim())).filter(n=>!isNaN(n));
-
   if(!fornecedor || !valorTotal || !dataStr || !semanas || diasParcelas.length===0){
     alert('Preencha fornecedor, valor, data, semanas e ao menos 1 parcela.');
     return;
   }
-  const plano = calcularPlano({fornecedor, valorTotal, dataInicio: new Date(dataStr+'T00:00:00'), semanas, diasParcelas});
-  planos.push(plano);
+  planos.push(calcularPlano({fornecedor, valorTotal, dataInicio: new Date(dataStr+'T00:00:00'), semanas, diasParcelas}));
   salvarStorage();
   renderTudo();
 }
@@ -336,60 +429,29 @@ function renderPlanos(){
 function renderFluxo(){
   const tbody = document.querySelector('#fluxo-table tbody');
   const linhas = [];
-  planos.forEach(p=>{
-    p.compras.forEach(c=>{
-      c.parcelas.forEach(pc=>{
-        linhas.push({venc:new Date(pc.vencimento), fornecedor:p.fornecedor, compra:new Date(c.dataCompra), valor:pc.valor});
-      });
-    });
-  });
+  planos.forEach(p=>p.compras.forEach(c=>c.parcelas.forEach(pc=>{
+    linhas.push({venc:new Date(pc.vencimento), fornecedor:p.fornecedor, compra:new Date(c.dataCompra), valor:pc.valor});
+  })));
   linhas.sort((a,b)=>a.venc-b.venc);
   document.getElementById('fluxo-empty').style.display = linhas.length ? 'none' : 'block';
   tbody.innerHTML = linhas.map(l=>`<tr><td>${fmtData(l.venc)}</td><td>${l.fornecedor}</td><td>${fmtData(l.compra)}</td><td>${fmt(l.valor)}</td></tr>`).join('');
 }
 
-function renderTudo(){ renderPlanos(); renderFluxo(); renderProdutos(); }
-
-function importarJSON(ev){
-  const file = ev.target.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = e=>{
-    try{
-      historicoTiny = JSON.parse(e.target.result);
-      const hist = historicoTiny.historico_por_fornecedor || [];
-      const porFornecedor = {};
-      hist.forEach(h=>{
-        porFornecedor[h.fornecedor] = (porFornecedor[h.fornecedor]||0) + h.total_comprado;
-      });
-      const linhas = Object.entries(porFornecedor).map(([f,v])=>`${f}: ${fmt(v)} no período`).join(' | ');
-      document.getElementById('historico-info').textContent = `Histórico importado (${historicoTiny.periodo?.de} a ${historicoTiny.periodo?.ate}): ${linhas}`;
-    }catch(err){
-      alert('Arquivo inválido. Use o JSON gerado pelo script previsao_compras_tiny.py');
-    }
-  };
-  reader.readAsText(file);
-}
-
-async function exportarCSV(){
+function exportarCSV(){
   const linhas = [['Vencimento','Fornecedor','Data da compra','Valor da parcela']];
   planos.forEach(p=>p.compras.forEach(c=>c.parcelas.forEach(pc=>{
     linhas.push([fmtData(new Date(pc.vencimento)), p.fornecedor, fmtData(new Date(c.dataCompra)), pc.valor.toFixed(2)]);
   })));
   if(linhas.length===1){ alert('Nenhuma previsão para exportar.'); return; }
   const csv = linhas.map(l=>l.join(';')).join('\n');
-  try{
-    const downloads = await claude.use('downloads');
-    if(downloads){
-      await downloads.save({filename:'fluxo_pagamento.csv', data: csv});
-      return;
-    }
-  }catch(e){}
-  // fallback: abre em nova aba caso a capability não esteja disponível
-  const blob = new Blob([csv], {type:'text/csv'});
-  window.open(URL.createObjectURL(blob));
+  const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'fluxo_pagamento.csv';
+  a.click();
 }
 
+function renderTudo(){ renderPlanos(); renderFluxo(); renderProdutos(); renderVendas(); }
 renderTudo();
 </script>
 </body>
