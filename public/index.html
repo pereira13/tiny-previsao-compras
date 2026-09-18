@@ -153,6 +153,15 @@ function salvarStorageCustos(){ try{ localStorage.setItem('previsao_compras_cust
 function fmt(v){ return (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 function fmtData(d){ return d.toLocaleDateString('pt-BR'); }
 
+// Gerador de IDs sempre em formato de texto seguro (só letras/números/_),
+// para nunca quebrar quando for usado dentro de onclick="...(${id})".
+let idSeq = 0;
+function uid(prefixo){
+  idSeq++;
+  return `${prefixo||'id'}_${Date.now().toString(36)}_${idSeq}_${Math.random().toString(36).slice(2,8)}`;
+}
+function normCodigo(c){ return (c||'').toString().trim().toUpperCase(); }
+
 // ---------------------------------------------------------------
 // 1. Vendas por período (upload .xls do Tiny)
 // ---------------------------------------------------------------
@@ -189,7 +198,7 @@ async function handleVendasUpload(ev){
     status.textContent = `Lendo ${file.name}...`;
     try{
       const itens = await parseArquivoVendas(file);
-      vendasSemanais.push({ id: Date.now()+Math.random(), arquivo: file.name, dias, importadoEm: new Date().toISOString(), itens });
+      vendasSemanais.push({ id: uid('venda'), arquivo: file.name, dias, importadoEm: new Date().toISOString(), itens });
     }catch(err){
       alert(`Não consegui ler "${file.name}": ${err.message}`);
     }
@@ -224,7 +233,7 @@ function agregarVendas(){
 function renderVendas(){
   const periodosEl = document.getElementById('vendas-periodos');
   periodosEl.innerHTML = vendasSemanais.length ? `<table><thead><tr><th>Arquivo</th><th>Dias cobertos</th><th>Produtos no relatório</th><th></th></tr></thead><tbody>` +
-    vendasSemanais.map(v=>`<tr><td>${v.arquivo}</td><td>${v.dias}</td><td>${v.itens.length}</td><td><button class="btn-danger" style="padding:4px 8px;font-size:.75rem" onclick="removerSnapshotVendas(${v.id})">✕</button></td></tr>`).join('') +
+    vendasSemanais.map(v=>`<tr><td>${v.arquivo}</td><td>${v.dias}</td><td>${v.itens.length}</td><td><button class="btn-danger" style="padding:4px 8px;font-size:.75rem" onclick="removerSnapshotVendas('${v.id}')">✕</button></td></tr>`).join('') +
     `</tbody></table>` : '';
 
   const agregados = agregarVendas();
@@ -238,15 +247,15 @@ function aplicarVendasNaReposicao(){
   const agregados = agregarVendas();
   if(!agregados.length){ alert('Anexe pelo menos um relatório de vendas primeiro.'); return; }
   agregados.forEach(a=>{
-    let p = produtos.find(x=>x.codigo && x.codigo===a.codigo);
-    const custo = custoPorCodigo[a.codigo];
+    let p = produtos.find(x=>x.codigo && normCodigo(x.codigo)===normCodigo(a.codigo));
+    const custo = custoPorCodigo[normCodigo(a.codigo)];
     if(p){
       p.consumoDiario = +a.consumoDiario.toFixed(4);
       p.nome = a.nome || p.nome;
       if(custo) p.custoUnitario = custo.custo;
     } else {
       produtos.push({
-        id: Date.now()+Math.random()+a.codigo,
+        id: uid('prod'),
         codigo: a.codigo,
         nome: a.nome,
         fornecedor: '',
@@ -275,7 +284,7 @@ async function buscarProdutosTiny(){
     status.textContent = `${dados.total} produtos encontrados no Tiny.`;
     custoPorCodigo = {};
     dados.produtos.forEach(p=>{
-      if(p.codigo) custoPorCodigo[p.codigo] = { nome: p.nome, preco: parseFloat(p.preco)||0, custo: parseFloat(p.preco_custo)||0 };
+      if(p.codigo) custoPorCodigo[normCodigo(p.codigo)] = { nome: p.nome, preco: parseFloat(p.preco)||0, custo: parseFloat(p.preco_custo)||0 };
     });
     salvarStorageCustos();
     const table = document.getElementById('tiny-produtos-table');
@@ -307,7 +316,7 @@ function salvarProduto(){
   const custoUnitario = parseFloat(document.getElementById('p-custo').value) || 0;
   const diasCobertura = parseFloat(document.getElementById('p-dias').value) || 0;
   if(!nome || !fornecedor){ alert('Preencha ao menos o produto e o fornecedor.'); return; }
-  produtos.push({id: Date.now()+Math.random(), codigo, nome, fornecedor, estoqueAtual, consumoDiario, custoUnitario, diasCobertura});
+  produtos.push({id: uid('prod'), codigo, nome, fornecedor, estoqueAtual, consumoDiario, custoUnitario, diasCobertura});
   salvarStorageProdutos();
   renderProdutos();
   ['p-nome','p-codigo','p-fornecedor'].forEach(id=>document.getElementById(id).value='');
@@ -344,16 +353,16 @@ function renderProdutos(){
     const {qtdComprar, valorCompra} = calcularSugestao(p);
     return `<tr>
       <td>${p.nome}${p.codigo?` <span class="tag">${p.codigo}</span>`:''}</td>
-      <td><input value="${p.fornecedor||''}" style="width:100px" onchange="atualizarProdutoTexto(${p.id},'fornecedor',this.value)"></td>
-      <td><input type="number" value="${p.estoqueAtual}" style="width:80px" onchange="atualizarProdutoCampo(${p.id},'estoqueAtual',this.value)"></td>
-      <td><input type="number" step="0.01" value="${p.consumoDiario}" style="width:80px" onchange="atualizarProdutoCampo(${p.id},'consumoDiario',this.value)"></td>
-      <td><input type="number" step="0.01" value="${p.custoUnitario}" style="width:90px" onchange="atualizarProdutoCampo(${p.id},'custoUnitario',this.value)"></td>
-      <td><input type="number" value="${p.diasCobertura}" style="width:70px" onchange="atualizarProdutoCampo(${p.id},'diasCobertura',this.value)"></td>
+      <td><input value="${p.fornecedor||''}" style="width:100px" onchange="atualizarProdutoTexto('${p.id}','fornecedor',this.value)"></td>
+      <td><input type="number" value="${(+p.estoqueAtual).toFixed(0)}" style="width:80px" onchange="atualizarProdutoCampo('${p.id}','estoqueAtual',this.value)"></td>
+      <td><input type="number" step="0.01" value="${(+p.consumoDiario).toFixed(2)}" style="width:80px" onchange="atualizarProdutoCampo('${p.id}','consumoDiario',this.value)"></td>
+      <td><input type="number" step="0.01" value="${(+p.custoUnitario).toFixed(2)}" style="width:90px" onchange="atualizarProdutoCampo('${p.id}','custoUnitario',this.value)"></td>
+      <td><input type="number" value="${(+p.diasCobertura).toFixed(0)}" style="width:70px" onchange="atualizarProdutoCampo('${p.id}','diasCobertura',this.value)"></td>
       <td><strong>${qtdComprar.toFixed(1)}</strong></td>
       <td><strong>${fmt(valorCompra)}</strong></td>
       <td style="white-space:nowrap">
-        <button class="btn-primary" style="padding:5px 10px;font-size:.75rem" onclick="gerarPedidoDoProduto(${p.id})">Gerar pedido</button>
-        <button class="btn-danger" style="padding:5px 10px;font-size:.75rem" onclick="removerProduto(${p.id})">✕</button>
+        <button class="btn-primary" style="padding:5px 10px;font-size:.75rem" onclick="gerarPedidoDoProduto('${p.id}')">Gerar pedido</button>
+        <button class="btn-danger" style="padding:5px 10px;font-size:.75rem" onclick="removerProduto('${p.id}')">✕</button>
       </td>
     </tr>`;
   }).join('');
@@ -383,7 +392,7 @@ function calcularPlano({fornecedor, valorTotal, dataInicio, semanas, diasParcela
     });
     compras.push({dataCompra: dataCompra.toISOString(), valorCompra: valorSemana, parcelas});
   }
-  return {fornecedor, valorTotal, semanas, diasParcelas, compras, id: Date.now()+Math.random()};
+  return {fornecedor, valorTotal, semanas, diasParcelas, compras, id: uid('plano')};
 }
 
 function salvarPlano(){
@@ -418,7 +427,7 @@ function renderPlanos(){
     return `<div class="card plan">
       <div class="plan-head">
         <h3>${p.fornecedor} <span class="tag">${fmt(p.valorTotal)} em ${p.semanas} semanas</span></h3>
-        <button class="btn-danger" onclick="removerPlano(${p.id})">Remover</button>
+        <button class="btn-danger" onclick="removerPlano('${p.id}')">Remover</button>
       </div>
       <div class="overflow"><table><thead><tr><th>Data da compra</th><th>Valor da compra</th><th>Parcelas (dias: vencimento, valor)</th></tr></thead>
       <tbody>${linhas}</tbody></table></div>
